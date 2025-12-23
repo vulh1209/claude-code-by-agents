@@ -23,6 +23,7 @@
     "cli/args.ts",
     "cli/validation.ts",
     "handlers/**/*.ts",
+    "services/**/*.ts",
     "history/**/*.ts",
     "middleware/**/*.ts",
     "runtime/types.ts",

@@ -687,4 +687,25 @@ function setupStorageHandlers() {
   ipcMain.handle('storage:load-all-settings', async (event) => {
     return storage.loadAllSettings();
   });
+
+  // Task Queue Storage
+  ipcMain.handle('storage:save-task-queue', async (event, queueId, queue) => {
+    return storage.saveTaskQueue(queueId, queue);
+  });
+
+  ipcMain.handle('storage:load-task-queue', async (event, queueId) => {
+    return storage.loadTaskQueue(queueId);
+  });
+
+  ipcMain.handle('storage:delete-task-queue', async (event, queueId) => {
+    return storage.deleteTaskQueue(queueId);
+  });
+
+  ipcMain.handle('storage:list-task-queues', async (event) => {
+    return storage.listTaskQueues();
+  });
+
+  ipcMain.handle('storage:load-interrupted-queues', async (event) => {
+    return storage.loadInterruptedQueues();
+  });
 }

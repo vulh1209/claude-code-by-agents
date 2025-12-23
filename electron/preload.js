@@ -89,7 +89,36 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }
       return ipcRenderer.invoke('storage:load-setting', key);
     },
-    loadAllSettings: () => ipcRenderer.invoke('storage:load-all-settings')
+    loadAllSettings: () => ipcRenderer.invoke('storage:load-all-settings'),
+
+    // Task Queue Storage
+    saveTaskQueue: (queueId, queue) => {
+      if (!validateString(queueId, 100)) {
+        return Promise.reject(new Error('Invalid queue ID'));
+      }
+      if (!validateObject(queue)) {
+        return Promise.reject(new Error('Invalid queue object'));
+      }
+      // Limit tasks array size
+      if (queue.tasks && queue.tasks.length > 100) {
+        return Promise.reject(new Error('Too many tasks in queue'));
+      }
+      return ipcRenderer.invoke('storage:save-task-queue', queueId, queue);
+    },
+    loadTaskQueue: (queueId) => {
+      if (!validateString(queueId, 100)) {
+        return Promise.reject(new Error('Invalid queue ID'));
+      }
+      return ipcRenderer.invoke('storage:load-task-queue', queueId);
+    },
+    deleteTaskQueue: (queueId) => {
+      if (!validateString(queueId, 100)) {
+        return Promise.reject(new Error('Invalid queue ID'));
+      }
+      return ipcRenderer.invoke('storage:delete-task-queue', queueId);
+    },
+    listTaskQueues: () => ipcRenderer.invoke('storage:list-task-queues'),
+    loadInterruptedQueues: () => ipcRenderer.invoke('storage:load-interrupted-queues')
   }
 });
 

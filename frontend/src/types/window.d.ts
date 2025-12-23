@@ -15,16 +15,23 @@ declare global {
         // Agent Configuration
         saveAgentConfig: (config: any) => Promise<{success: boolean, error?: string}>;
         loadAgentConfig: () => Promise<{success: boolean, data?: any, error?: string}>;
-        
+
         // Chat Messages
         saveConversation: (sessionId: string, messages: any[]) => Promise<{success: boolean, error?: string}>;
         loadConversation: (sessionId: string) => Promise<{success: boolean, data?: any, error?: string}>;
         listConversations: () => Promise<{success: boolean, data?: any[], error?: string}>;
-        
+
         // App Settings
         saveSetting: (key: string, value: any) => Promise<{success: boolean, error?: string}>;
         loadSetting: (key: string) => Promise<{success: boolean, data?: any, error?: string}>;
         loadAllSettings: () => Promise<{success: boolean, data?: any, error?: string}>;
+
+        // Task Queue Storage
+        saveTaskQueue: (queueId: string, queue: any) => Promise<{success: boolean, error?: string}>;
+        loadTaskQueue: (queueId: string) => Promise<{success: boolean, data?: any, error?: string}>;
+        deleteTaskQueue: (queueId: string) => Promise<{success: boolean, error?: string}>;
+        listTaskQueues: () => Promise<{success: boolean, data?: any[], error?: string}>;
+        loadInterruptedQueues: () => Promise<{success: boolean, data?: any[], error?: string}>;
       };
     };
   }

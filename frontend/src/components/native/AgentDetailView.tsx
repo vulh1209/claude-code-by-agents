@@ -44,6 +44,8 @@ interface AgentDetailViewProps {
   switchToAgent: (agentId: string) => void;
   getOrCreateAgentSession: (agentId: string) => any;
   loadHistoricalMessages: (messages: any[], sessionId: string, agentId?: string, useAgentRoom?: boolean) => void;
+  // Queue integration
+  isBusy?: boolean;
 }
 
 const getAgentColor = (agentId: string) => {
@@ -68,7 +70,7 @@ const getAgentColor = (agentId: string) => {
   return colors[Math.abs(hash) % colors.length];
 };
 
-export function AgentDetailView({ 
+export function AgentDetailView({
   agentId,
   // agentSessions, // Not used directly
   input,
@@ -91,6 +93,7 @@ export function AgentDetailView({
   switchToAgent,
   getOrCreateAgentSession,
   loadHistoricalMessages,
+  isBusy = false,
 }: AgentDetailViewProps) {
   const { getAgentById, config } = useAgentConfig();
   const agent = getAgentById(agentId);
@@ -1145,11 +1148,38 @@ export function AgentDetailView({
 
       </div>
       
+      {/* Busy Banner */}
+      {isBusy && (
+        <div
+          style={{
+            padding: "12px 16px",
+            background: "var(--claude-accent-subtle)",
+            borderTop: "1px solid var(--claude-border)",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            color: "var(--claude-text-secondary)",
+            fontSize: "13px",
+          }}
+        >
+          <div
+            style={{
+              width: "8px",
+              height: "8px",
+              borderRadius: "50%",
+              background: "var(--claude-accent)",
+              animation: "pulse 1.5s ease-in-out infinite",
+            }}
+          />
+          <span>Agent is processing a queue task...</span>
+        </div>
+      )}
+
       {/* Chat Input */}
-      <div style={{ borderTop: "1px solid var(--claude-border)" }}>
+      <div style={{ borderTop: "1px solid var(--claude-border)", opacity: isBusy ? 0.5 : 1, pointerEvents: isBusy ? "none" : "auto" }}>
         <ChatInput
           input={input}
-          isLoading={isLoading}
+          isLoading={isLoading || isBusy}
           currentRequestId={currentRequestId}
           activeAgentId={agentId}
           currentMode="agent"

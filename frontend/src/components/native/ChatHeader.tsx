@@ -1,9 +1,9 @@
-import { Users, User, MoreHorizontal, Download, Trash2 } from "lucide-react";
+import { Users, User, MoreHorizontal, Download, Trash2, ListTodo } from "lucide-react";
 import { useState } from "react";
 import { useAgentConfig } from "../../hooks/useAgentConfig";
 
 interface ChatHeaderProps {
-  currentMode: "group" | "agent";
+  currentMode: "group" | "agent" | "queue";
   activeAgentId: string | null;
   onModeToggle: () => void;
 }
@@ -27,9 +27,22 @@ export function ChatHeader({ currentMode, activeAgentId }: ChatHeaderProps) {
   return (
     <div className="chat-header app-drag-region">
       <div className="chat-header-left app-no-drag">
-        {currentMode === "group" ? (
+        {currentMode === "queue" ? (
           <>
-            <div 
+            <div
+              className="chat-header-icon"
+              style={{ background: "linear-gradient(135deg, var(--claude-accent), var(--claude-text-accent))" }}
+            >
+              <ListTodo size={12} />
+            </div>
+            <div className="chat-header-info">
+              <h2>Task Queue</h2>
+              <p>Parallel task execution</p>
+            </div>
+          </>
+        ) : currentMode === "group" ? (
+          <>
+            <div
               className="chat-header-icon"
               style={{ background: "linear-gradient(135deg, var(--agent-admin), var(--agent-web))" }}
             >
@@ -42,7 +55,7 @@ export function ChatHeader({ currentMode, activeAgentId }: ChatHeaderProps) {
           </>
         ) : (
           <>
-            <div 
+            <div
               className="chat-header-icon"
               style={{ backgroundColor: currentAgent ? getAgentColor(currentAgent.id) : "var(--claude-border)" }}
             >

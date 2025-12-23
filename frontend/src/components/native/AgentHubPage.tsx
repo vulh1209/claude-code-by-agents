@@ -1,16 +1,18 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import type { ChatRequest, ChatMessage, ExecutionStep } from "../../types";
 import { useTheme } from "../../hooks/useTheme";
 import { useClaudeStreaming } from "../../hooks/useClaudeStreaming";
 import { useChatState } from "../../hooks/chat/useChatState";
 import { usePermissions } from "../../hooks/chat/usePermissions";
 import { useAbortController } from "../../hooks/chat/useAbortController";
+import { useTaskQueue } from "../../hooks/useTaskQueue";
 import { Sidebar } from "./Sidebar";
 import { ChatHeader } from "./ChatHeader";
-import { ChatMessages } from "../chat/ChatMessages"; 
+import { ChatMessages } from "../chat/ChatMessages";
 import { ChatInput } from "./ChatInput";
 import { AgentDetailView } from "./AgentDetailView";
 import { PermissionDialog } from "../PermissionDialog";
+import { TaskQueueModal, TaskQueueDashboard } from "../queue";
 import { getChatUrl } from "../../config/api";
 import { KEYBOARD_SHORTCUTS } from "../../utils/constants";
 import { useAgentConfig } from "../../hooks/useAgentConfig";
@@ -18,11 +20,13 @@ import { useHistoryLoader } from "../../hooks/useHistoryLoader";
 import { useRemoteAgentHistory } from "../../hooks/useRemoteAgentHistory";
 import { useClaudeAuth } from "../../hooks/useClaudeAuth";
 import type { StreamingContext } from "../../hooks/streaming/useMessageProcessor";
+import type { TaskInput } from "../../../shared/taskQueueTypes";
 import { debugStreamingConnection, debugStreamingChunk, debugStreamingPerformance, warnProxyBuffering } from "../../utils/streamingDebug";
 
 export function AgentHubPage() {
-  const [currentMode, setCurrentMode] = useState<"group" | "agent">("group");
-  
+  const [currentMode, setCurrentMode] = useState<"group" | "agent" | "queue">("group");
+  const [showQueueModal, setShowQueueModal] = useState(false);
+
   useTheme(); // For theme switching support
   const { processStreamLine } = useClaudeStreaming();
   const { abortRequest, createAbortHandler } = useAbortController();
@@ -30,6 +34,30 @@ export function AgentHubPage() {
   const historyLoader = useHistoryLoader();
   const remoteHistory = useRemoteAgentHistory();
   const { session: claudeSession } = useClaudeAuth();
+
+  // Get the orchestrator agent's endpoint for queue API calls
+  const orchestratorAgent = getOrchestratorAgent();
+  const queueApiEndpoint = orchestratorAgent?.apiEndpoint || "";
+
+  // Task Queue hook
+  const {
+    queues,
+    queueList,
+    activeQueueId,
+    activeQueue,
+    isLoading: isQueueLoading,
+    error: queueError,
+    createQueue,
+    loadQueue,
+    startQueue,
+    pauseQueue,
+    resumeQueue,
+    cancelQueue,
+    retryTask,
+    skipTask,
+    setActiveQueue,
+    busyAgentIds,
+  } = useTaskQueue(queueApiEndpoint);
 
   const {
     messages,
@@ -100,6 +128,43 @@ export function AgentHubPage() {
     setCurrentMode("group");
   }, []);
 
+  // Queue handlers
+  const handleShowQueue = useCallback(() => {
+    setCurrentMode("queue");
+  }, []);
+
+  const handleOpenQueueModal = useCallback(() => {
+    setShowQueueModal(true);
+  }, []);
+
+  const handleCloseQueueModal = useCallback(() => {
+    setShowQueueModal(false);
+  }, []);
+
+  const handleCreateQueue = useCallback(
+    async (name: string, tasks: TaskInput[]) => {
+      const queue = await createQueue(name, tasks);
+      if (queue) {
+        setShowQueueModal(false);
+        setCurrentMode("queue");
+        // Auto-start the queue after creation
+        await startQueue(queue.id);
+      }
+    },
+    [createQueue, startQueue]
+  );
+
+  // Memoized queue progress for sidebar badge
+  const queueProgress = useMemo(() => {
+    if (!activeQueue) return null;
+    return {
+      completed: activeQueue.metrics.completedTasks,
+      total: activeQueue.metrics.totalTasks,
+    };
+  }, [activeQueue]);
+
+  // Memoized busy agent IDs
+  const currentBusyAgentIds = useMemo(() => busyAgentIds(), [busyAgentIds, queues]);
 
   const handleHistoryConversationSelect = useCallback(async (sessionId: string, agentId?: string) => {
     try {
@@ -722,6 +787,9 @@ export function AgentHubPage() {
         onNewAgentRoom={handleNewAgentRoom}
         currentMode={currentMode}
         onModeChange={setCurrentMode}
+        onShowQueue={handleShowQueue}
+        queueProgress={queueProgress}
+        busyAgentIds={currentBusyAgentIds}
       />
 
       {/* Main Content */}
@@ -734,7 +802,23 @@ export function AgentHubPage() {
         />
 
         {/* Main Content Area */}
-        {currentMode === "agent" && activeAgentId ? (
+        {currentMode === "queue" ? (
+          /* Task Queue Dashboard */
+          <TaskQueueDashboard
+            queue={activeQueue}
+            queueList={queueList}
+            isLoading={isQueueLoading}
+            error={queueError}
+            onLoadQueue={loadQueue}
+            onStartQueue={startQueue}
+            onPauseQueue={pauseQueue}
+            onResumeQueue={resumeQueue}
+            onCancelQueue={cancelQueue}
+            onRetryTask={retryTask}
+            onSkipTask={skipTask}
+            onNewQueue={handleOpenQueueModal}
+          />
+        ) : currentMode === "agent" && activeAgentId ? (
           /* Agent Detail View */
           <AgentDetailView
             agentId={activeAgentId}
@@ -759,15 +843,16 @@ export function AgentHubPage() {
             switchToAgent={switchToAgent}
             getOrCreateAgentSession={getOrCreateAgentSession}
             loadHistoricalMessages={loadHistoricalMessages}
+            isBusy={currentBusyAgentIds.has(activeAgentId)}
           />
         ) : (
           /* Chat Interface */
           <>
             {/* Messages Area */}
             <div className="messages-container">
-              <ChatMessages 
-                messages={currentMode === "group" ? getAgentRoomContext().messages : messages} 
-                isLoading={isLoading} 
+              <ChatMessages
+                messages={currentMode === "group" ? getAgentRoomContext().messages : messages}
+                isLoading={isLoading}
                 onExecuteStep={handleExecuteStep}
                 onExecutePlan={handleExecutePlan}
                 currentAgentId={activeAgentId || undefined}
@@ -801,6 +886,16 @@ export function AgentHubPage() {
         />
       )}
 
+      {/* Task Queue Modal */}
+      {showQueueModal && (
+        <TaskQueueModal
+          isOpen={showQueueModal}
+          onClose={handleCloseQueueModal}
+          onCreateQueue={handleCreateQueue}
+          agents={agents}
+          orchestratorEndpoint={queueApiEndpoint}
+        />
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { MessageCircle, Users, Settings } from "lucide-react";
+import { MessageCircle, Users, Settings, ListTodo, Lock } from "lucide-react";
 import { useState } from "react";
 import { useAgentConfig } from "../../hooks/useAgentConfig";
 import { SettingsModal } from "../SettingsModal";
@@ -9,8 +9,11 @@ interface SidebarProps {
   agentSessions: Record<string, { sessionId: string | null; messages: any[] }>;
   onAgentSelect: (agentId: string) => void;
   onNewAgentRoom: () => void;
-  currentMode: "group" | "agent";
-  onModeChange: (mode: "group" | "agent") => void;
+  currentMode: "group" | "agent" | "queue";
+  onModeChange: (mode: "group" | "agent" | "queue") => void;
+  onShowQueue?: () => void;
+  queueProgress?: { completed: number; total: number } | null;
+  busyAgentIds?: Set<string>;
 }
 
 const getAgentColor = (agentId: string) => {
@@ -24,13 +27,16 @@ const getAgentColor = (agentId: string) => {
   return colorMap[agentId] || "var(--claude-text-accent)";
 };
 
-export function Sidebar({ 
-  activeAgentId, 
-  agentSessions, 
-  onAgentSelect, 
+export function Sidebar({
+  activeAgentId,
+  agentSessions,
+  onAgentSelect,
   onNewAgentRoom,
   currentMode,
-  onModeChange 
+  onModeChange,
+  onShowQueue,
+  queueProgress,
+  busyAgentIds = new Set(),
 }: SidebarProps) {
   const [showSettings, setShowSettings] = useState(false);
   const { getWorkerAgents } = useAgentConfig();
@@ -62,6 +68,23 @@ export function Sidebar({
           Agent Room
           {currentMode === "group" && <span className="sidebar-button-badge">•</span>}
         </button>
+
+        {/* Task Queue Button */}
+        <button
+          onClick={() => {
+            onShowQueue?.();
+            onModeChange("queue");
+          }}
+          className={`sidebar-button ${currentMode === "queue" ? "active" : ""}`}
+        >
+          <ListTodo className="sidebar-button-icon" />
+          Task Queue
+          {queueProgress && (
+            <span className="sidebar-queue-badge">
+              {queueProgress.completed}/{queueProgress.total}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Agents Section */}
@@ -74,7 +97,8 @@ export function Sidebar({
           const isActive = activeAgentId === agent.id && currentMode === "agent";
           const hasMessages = agentSessions[agent.id]?.messages.length > 0;
           const messageCount = agentSessions[agent.id]?.messages.length || 0;
-          
+          const isBusy = busyAgentIds.has(agent.id);
+
           return (
             <div
               key={agent.id}
@@ -82,22 +106,39 @@ export function Sidebar({
                 onAgentSelect(agent.id);
                 onModeChange("agent");
               }}
-              className={`sidebar-agent-item ${isActive ? "active" : ""}`}
+              className={`sidebar-agent-item ${isActive ? "active" : ""} ${isBusy ? "busy" : ""}`}
             >
               {/* Agent Indicator */}
-              <div 
+              <div
                 className="sidebar-agent-dot"
-                style={{ backgroundColor: getAgentColor(agent.id) }}
+                style={{
+                  backgroundColor: isBusy ? "#f59e0b" : getAgentColor(agent.id),
+                  animation: isBusy ? "pulse 1.5s ease-in-out infinite" : undefined,
+                }}
               />
-              
+
               {/* Agent Info */}
               <div className="sidebar-agent-info">
-                <div className="sidebar-agent-name">{agent.name}</div>
-                <div className="sidebar-agent-desc">{agent.description}</div>
+                <div className="sidebar-agent-name">
+                  {agent.name}
+                  {isBusy && (
+                    <Lock
+                      size={12}
+                      style={{
+                        marginLeft: "6px",
+                        color: "#f59e0b",
+                        verticalAlign: "middle",
+                      }}
+                    />
+                  )}
+                </div>
+                <div className="sidebar-agent-desc">
+                  {isBusy ? "Working on queue task..." : agent.description}
+                </div>
               </div>
 
               {/* Message Count */}
-              {hasMessages && (
+              {hasMessages && !isBusy && (
                 <div className="sidebar-agent-count">{messageCount}</div>
               )}
             </div>

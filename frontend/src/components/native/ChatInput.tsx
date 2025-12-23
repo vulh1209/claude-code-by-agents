@@ -7,7 +7,7 @@ interface ChatInputProps {
   isLoading: boolean;
   currentRequestId: string | null;
   activeAgentId: string | null;
-  currentMode: "group" | "agent";
+  currentMode: "group" | "agent" | "queue";
   lastUsedAgentId: string | null;
   onInputChange: (value: string) => void;
   onSubmit: () => void;

@@ -21,6 +21,17 @@ import { handleAbortRequest } from "./handlers/abort.ts";
 import { handleAgentProjectsRequest } from "./handlers/agentProjects.ts";
 import { handleAgentHistoriesRequest } from "./handlers/agentHistories.ts";
 import { handleAgentConversationRequest } from "./handlers/agentConversations.ts";
+import {
+  handleCreateQueue,
+  handleGetQueue,
+  handleDeleteQueue,
+  handleListQueues,
+  handleStartQueue,
+  handlePauseQueue,
+  handleResumeQueue,
+  handleRetryTask,
+  handleQueueStream,
+} from "./handlers/taskQueue.ts";
 import { globalRegistry } from "./providers/registry.ts";
 import { globalImageHandler } from "./utils/imageHandling.ts";
 import { specs } from "./swagger/config.ts";
@@ -470,6 +481,158 @@ export function createApp(
    *               $ref: '#/components/schemas/ErrorResponse'
    */
   app.post("/api/multi-agent-chat", (c) => handleMultiAgentChatRequest(c, requestAbortControllers));
+
+  // ============================================
+  // Task Queue API Routes
+  // ============================================
+
+  /**
+   * @swagger
+   * /api/queues:
+   *   get:
+   *     summary: List all task queues
+   *     description: Returns a list of all task queues with summary information
+   *     tags: [TaskQueue]
+   *     responses:
+   *       200:
+   *         description: List of task queues
+   */
+  app.get("/api/queues", (c) => handleListQueues(c));
+
+  /**
+   * @swagger
+   * /api/queue:
+   *   post:
+   *     summary: Create a new task queue
+   *     description: Creates a new task queue with specified tasks and settings
+   *     tags: [TaskQueue]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [name, tasks]
+   *             properties:
+   *               name:
+   *                 type: string
+   *               tasks:
+   *                 type: array
+   *                 items:
+   *                   type: object
+   *                   properties:
+   *                     agentId:
+   *                       type: string
+   *                     message:
+   *                       type: string
+   *     responses:
+   *       201:
+   *         description: Queue created successfully
+   */
+  app.post("/api/queue", (c) => handleCreateQueue(c));
+
+  /**
+   * @swagger
+   * /api/queue/{queueId}:
+   *   get:
+   *     summary: Get queue status and tasks
+   *     tags: [TaskQueue]
+   *     parameters:
+   *       - in: path
+   *         name: queueId
+   *         required: true
+   *         schema:
+   *           type: string
+   *     responses:
+   *       200:
+   *         description: Queue details
+   *       404:
+   *         description: Queue not found
+   */
+  app.get("/api/queue/:queueId", (c) => handleGetQueue(c));
+
+  /**
+   * @swagger
+   * /api/queue/{queueId}:
+   *   delete:
+   *     summary: Delete/cancel a queue
+   *     tags: [TaskQueue]
+   *     parameters:
+   *       - in: path
+   *         name: queueId
+   *         required: true
+   *         schema:
+   *           type: string
+   *     responses:
+   *       200:
+   *         description: Queue deleted
+   *       404:
+   *         description: Queue not found
+   */
+  app.delete("/api/queue/:queueId", (c) => handleDeleteQueue(c));
+
+  /**
+   * @swagger
+   * /api/queue/{queueId}/start:
+   *   post:
+   *     summary: Start queue execution
+   *     tags: [TaskQueue]
+   *     parameters:
+   *       - in: path
+   *         name: queueId
+   *         required: true
+   *         schema:
+   *           type: string
+   *     responses:
+   *       200:
+   *         description: Queue started
+   */
+  app.post("/api/queue/:queueId/start", (c) => {
+    // TODO: Pass agent resolver and claudeAuth from request
+    return handleStartQueue(c, () => undefined, undefined);
+  });
+
+  /**
+   * @swagger
+   * /api/queue/{queueId}/pause:
+   *   post:
+   *     summary: Pause queue execution
+   *     tags: [TaskQueue]
+   */
+  app.post("/api/queue/:queueId/pause", (c) => handlePauseQueue(c));
+
+  /**
+   * @swagger
+   * /api/queue/{queueId}/resume:
+   *   post:
+   *     summary: Resume queue execution
+   *     tags: [TaskQueue]
+   */
+  app.post("/api/queue/:queueId/resume", (c) => handleResumeQueue(c));
+
+  /**
+   * @swagger
+   * /api/queue/{queueId}/tasks/{taskId}/retry:
+   *   post:
+   *     summary: Retry a specific task
+   *     tags: [TaskQueue]
+   */
+  app.post("/api/queue/:queueId/tasks/:taskId/retry", (c) => handleRetryTask(c));
+
+  /**
+   * @swagger
+   * /api/queue/stream/{queueId}:
+   *   get:
+   *     summary: SSE stream for real-time queue updates
+   *     tags: [TaskQueue]
+   *     responses:
+   *       200:
+   *         description: Server-Sent Events stream
+   */
+  app.get("/api/queue/stream/:queueId", (c) => {
+    // TODO: Pass agent resolver and claudeAuth from request
+    return handleQueueStream(c, () => undefined, undefined);
+  });
 
   // Explicit preflight OPTIONS handler for all routes
   app.options("*", (c) => {
