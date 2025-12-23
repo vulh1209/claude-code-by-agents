@@ -5,6 +5,7 @@
  */
 
 import type { Runtime } from "../runtime/types.ts";
+import path from "node:path";
 
 /**
  * Detects if a file is an asdf shim by checking for the asdf exec pattern
@@ -60,6 +61,34 @@ async function resolveWrapperScript(
     return match ? match[1] : scriptPath;
   } catch {
     return scriptPath;
+  }
+}
+
+/**
+ * Extracts actual JS file path from Windows .cmd wrapper script
+ * Parses the path from npm/deno generated .cmd files
+ * @param runtime - Runtime abstraction for system operations
+ * @param cmdPath - Path to the .cmd file
+ * @returns string - The extracted cli.js path or original path if no match
+ */
+async function resolveWindowsCmdScript(
+  runtime: Runtime,
+  cmdPath: string,
+): Promise<string> {
+  try {
+    const content = await runtime.readTextFile(cmdPath);
+    // Match pattern like: "%dp0%\..\...\cli.js"
+    const match = content.match(/"%dp0%\\([^"]+\.js)"/);
+    if (match) {
+      // Get directory of the .cmd file
+      const cmdDir = path.dirname(cmdPath);
+      // Resolve the relative path from the .cmd file
+      const relativePath = match[1].replace(/\\/g, path.sep);
+      return path.resolve(cmdDir, relativePath);
+    }
+    return cmdPath;
+  } catch {
+    return cmdPath;
   }
 }
 
@@ -173,8 +202,16 @@ export async function validateClaudeCli(
         claudePath = await resolveExecutablePath(runtime, claudePath);
       }
     } else {
-      // Windows: resolve symlinks and wrapper scripts
-      claudePath = await resolveExecutablePath(runtime, claudePath);
+      // Windows: resolve .cmd wrapper to actual .js file
+      if (claudePath.endsWith('.cmd')) {
+        const resolvedJsPath = await resolveWindowsCmdScript(runtime, claudePath);
+        if (resolvedJsPath !== claudePath) {
+          console.log(`🔍 Resolved Windows .cmd to JS: ${resolvedJsPath}`);
+          claudePath = resolvedJsPath;
+        }
+      } else {
+        claudePath = await resolveExecutablePath(runtime, claudePath);
+      }
     }
 
     // Final validation: verify the resolved path works
@@ -182,9 +219,11 @@ export async function validateClaudeCli(
     // For auto-detected paths: needed because path may have been resolved/changed
     const versionResult = await runtime.runCommand(claudePath, ["--version"]);
     if (versionResult.success) {
+      // Convert to absolute path to avoid issues when running with different cwd
+      const absoluteClaudePath = path.resolve(claudePath);
       console.log(`✅ Claude CLI found: ${versionResult.stdout.trim()}`);
-      console.log(`   Path: ${claudePath}`);
-      return claudePath;
+      console.log(`   Path: ${absoluteClaudePath}`);
+      return absoluteClaudePath;
     } else {
       const pathType = customPath ? "Custom" : "Auto-detected";
       console.error(`❌ ${pathType} Claude path not working after resolution`);
