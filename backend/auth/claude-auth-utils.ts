@@ -1,5 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 
 // Get __dirname equivalent for ESM modules
 const __filename = fileURLToPath(import.meta.url);
@@ -15,15 +17,16 @@ export async function prepareClaudeAuthEnvironment(): Promise<{
   executableArgs: string[];
 }> {
   // Check if we have valid OAuth credentials by reading from the credentials file
+  // On Windows, use USERPROFILE; on Unix, use HOME
+  const homeDir = process.env.USERPROFILE || process.env.HOME || process.cwd();
   const credentialsPath = path.join(
-    process.env.HOME || process.cwd(),
+    homeDir,
     ".claude-credentials.json"
   );
   
   let hasValidCredentials = false;
   try {
-    const fs = await import("fs");
-    const credentialsData = await fs.promises.readFile(credentialsPath, "utf8");
+    const credentialsData = await readFile(credentialsPath, "utf8");
     const credentials = JSON.parse(credentialsData);
     
     // Check if we have a valid access token
@@ -77,7 +80,7 @@ export async function prepareClaudeAuthEnvironment(): Promise<{
   authEnv.NODE_OPTIONS = nodeOptions;
 
   // Add Claude configuration directories
-  authEnv.CLAUDE_CONFIG_DIR = path.join(process.env.HOME || process.cwd(), ".claude-config");
+  authEnv.CLAUDE_CONFIG_DIR = path.join(homeDir, ".claude-config");
   authEnv.CLAUDE_CREDENTIALS_PATH = credentialsPath;
 
   console.log("[AUTH] Prepared Claude auth environment:");
@@ -86,8 +89,7 @@ export async function prepareClaudeAuthEnvironment(): Promise<{
   console.log(`[AUTH] NODE_OPTIONS: ${nodeOptions}`);
   
   // Verify preload script exists
-  const fs = await import("fs");
-  if (!fs.existsSync(preloadScriptPath)) {
+  if (!existsSync(preloadScriptPath)) {
     console.error(`[AUTH] ERROR: Preload script not found at ${preloadScriptPath}`);
     console.error(`[AUTH] __dirname is: ${__dirname}`);
     console.error(`[AUTH] Resolved path is: ${preloadScriptPath}`);
@@ -117,8 +119,10 @@ export async function writeClaudeCredentialsFile(claudeAuth?: {
     uuid: string;
   };
 }): Promise<void> {
+  // On Windows, use USERPROFILE; on Unix, use HOME
+  const homeDir = process.env.USERPROFILE || process.env.HOME || process.cwd();
   const credentialsPath = path.join(
-    process.env.HOME || process.cwd(),
+    homeDir,
     ".claude-credentials.json"
   );
 
@@ -128,10 +132,9 @@ export async function writeClaudeCredentialsFile(claudeAuth?: {
       claudeAiOauth: claudeAuth
     };
     
-    const fs = await import("fs");
-    await fs.promises.writeFile(
-      credentialsPath, 
-      JSON.stringify(credentials, null, 2), 
+    await writeFile(
+      credentialsPath,
+      JSON.stringify(credentials, null, 2),
       { mode: 0o600 }
     );
     
@@ -141,7 +144,7 @@ export async function writeClaudeCredentialsFile(claudeAuth?: {
     
     // Verify the file was written correctly by reading it back
     try {
-      const writtenData = await fs.promises.readFile(credentialsPath, "utf8");
+      const writtenData = await readFile(credentialsPath, "utf8");
       const parsedData = JSON.parse(writtenData);
       console.log("[AUTH] Credentials file content preview:");
       console.log("[AUTH] - Has claudeAiOauth:", !!parsedData.claudeAiOauth);

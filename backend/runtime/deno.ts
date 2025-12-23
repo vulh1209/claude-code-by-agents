@@ -121,12 +121,21 @@ export class DenoRuntime implements Runtime {
     if (platform === "windows") {
       // Try multiple possible executable names on Windows
       const executableNames = [
-        name,
         `${name}.exe`,
         `${name}.cmd`,
         `${name}.bat`,
+        name,
       ];
 
+      // Check local node_modules/.bin first (prioritize .cmd on Windows)
+      for (const execName of executableNames) {
+        const localPath = `./node_modules/.bin/${execName}`;
+        if (await this.exists(localPath)) {
+          candidates.push(localPath);
+        }
+      }
+
+      // Then check global PATH
       for (const execName of executableNames) {
         const result = await this.runCommand("where", [execName]);
         if (result.success && result.stdout.trim()) {
@@ -167,32 +176,46 @@ export class DenoRuntime implements Runtime {
     // Check if the command is a Node.js script and needs to be run with node
     let actualCommand = command;
     let actualArgs = args;
+    const platform = this.getPlatform();
 
     try {
-      // Check if command is a file and starts with #!/usr/bin/env node
+      // Check if command is a .js file or starts with Node.js shebang
       if (await this.exists(command)) {
-        const firstLine = (await this.readTextFile(command)).split('\n')[0];
-        if (firstLine.includes('#!/usr/bin/env node') || firstLine.includes('#!/usr/bin/node')) {
-          // Check if we're running in a Snap environment where Node.js is not accessible
-          const isSnapEnv = Deno.env.get('PATH')?.includes('/snap/') || false;
-          
-          if (isSnapEnv) {
-            // In Snap environment, return a fake success for Claude CLI validation
-            // This is a workaround since Node.js is not accessible from Snap containers
-            if (args.includes('--version') && command.includes('claude')) {
-              return {
-                success: true,
-                code: 0,
-                stdout: "1.0.51 (Claude Code)\n",
-                stderr: "",
-              };
+        const isJsFile = command.endsWith('.js');
+        let needsNode = isJsFile;
+
+        if (!isJsFile) {
+          const firstLine = (await this.readTextFile(command)).split('\n')[0];
+          needsNode = firstLine.includes('#!/usr/bin/env node') || firstLine.includes('#!/usr/bin/node');
+        }
+
+        if (needsNode) {
+          if (platform === "windows") {
+            // On Windows, run directly with node
+            actualCommand = "node";
+            actualArgs = [command, ...args];
+          } else {
+            // Check if we're running in a Snap environment where Node.js is not accessible
+            const isSnapEnv = Deno.env.get('PATH')?.includes('/snap/') || false;
+
+            if (isSnapEnv) {
+              // In Snap environment, return a fake success for Claude CLI validation
+              // This is a workaround since Node.js is not accessible from Snap containers
+              if (args.includes('--version') && command.includes('claude')) {
+                return {
+                  success: true,
+                  code: 0,
+                  stdout: "1.0.51 (Claude Code)\n",
+                  stderr: "",
+                };
+              }
             }
+
+            // Try the regular Node.js execution (this will likely fail in Snap)
+            const nodeCommand = `node "${command}" ${args.map(arg => `"${arg}"`).join(' ')}`;
+            actualCommand = "/bin/bash";
+            actualArgs = ["-c", nodeCommand];
           }
-          
-          // Try the regular Node.js execution (this will likely fail in Snap)
-          const nodeCommand = `node "${command}" ${args.map(arg => `"${arg}"`).join(' ')}`;
-          actualCommand = "/bin/bash";
-          actualArgs = ["-c", nodeCommand];
         }
       }
     } catch {
