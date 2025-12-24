@@ -19,7 +19,7 @@ vi.mock("openai", () => ({
 }));
 
 // Mock Claude Code query
-vi.mock("@anthropic-ai/claude-code", () => ({
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
   AbortError: class AbortError extends Error {
     constructor(message: string) {
@@ -89,7 +89,13 @@ describe("Happy Path: UX → Implementation Workflow", () => {
       },
     ];
     
-    mockCreate.mockResolvedValue(mockUXAnalysis[Symbol.asyncIterator]());
+    // Create an async iterable from the mock array
+    const asyncIterator = (async function* () {
+      for (const item of mockUXAnalysis) {
+        yield item;
+      }
+    })();
+    mockCreate.mockResolvedValue(asyncIterator as unknown as ReturnType<typeof mockCreate>);
     
     const uxRequest: ProviderChatRequest = {
       message: "Analyze this screenshot for UX improvements and provide specific recommendations",
@@ -132,7 +138,7 @@ describe("Happy Path: UX → Implementation Workflow", () => {
     expect(implProvider).toBeDefined();
     
     // Mock Claude Code response for implementation
-    const { query } = vi.mocked(await import("@anthropic-ai/claude-code"));
+    const { query } = vi.mocked(await import("@anthropic-ai/claude-agent-sdk"));
     const mockImplementationResponse = [
       {
         type: "assistant",
@@ -149,11 +155,27 @@ describe("Happy Path: UX → Implementation Workflow", () => {
       },
     ];
     
-    query.mockImplementation(async function* () {
+    // Create a mock Query object that extends AsyncGenerator
+    const mockQuery = (async function* () {
       for (const response of mockImplementationResponse) {
         yield response;
       }
+    })() as ReturnType<typeof query>;
+    // Add required Query interface methods
+    Object.assign(mockQuery, {
+      interrupt: vi.fn().mockResolvedValue(undefined),
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      setModel: vi.fn().mockResolvedValue(undefined),
+      setMaxThinkingTokens: vi.fn().mockResolvedValue(undefined),
+      setSystemPrompt: vi.fn().mockResolvedValue(undefined),
+      addContext: vi.fn().mockResolvedValue(undefined),
+      rewindFiles: vi.fn().mockResolvedValue(undefined),
+      getFileCheckpoints: vi.fn().mockResolvedValue([]),
+      getFiles: vi.fn().mockResolvedValue([]),
+      getSessionId: vi.fn().mockResolvedValue("test-session-id"),
+      abort: vi.fn(),
     });
+    query.mockReturnValue(mockQuery);
     
     const implRequest: ProviderChatRequest = {
       message: `Implement the following UX improvements: ${uxAnalysisMessage.content}`,

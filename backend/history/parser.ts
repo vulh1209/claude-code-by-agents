@@ -6,7 +6,7 @@
 import type {
   SDKAssistantMessage,
   SDKUserMessage,
-} from "@anthropic-ai/claude-code";
+} from "@anthropic-ai/claude-agent-sdk";
 import type { Runtime } from "../runtime/types.ts";
 
 // Raw JSONL line structure from Claude history files

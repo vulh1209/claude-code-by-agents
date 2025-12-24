@@ -1,4 +1,4 @@
-import { query, AbortError } from "@anthropic-ai/claude-code";
+import { query, AbortError } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentProvider,
   ProviderChatRequest,
@@ -6,6 +6,21 @@ import type {
   ProviderResponse,
 } from "./types.ts";
 import { prepareClaudeAuthEnvironment, writeClaudeCredentialsFile } from "../auth/claude-auth-utils.ts";
+
+/**
+ * UUID v4 regex pattern for session ID validation
+ * Claude Code CLI requires session IDs to be valid UUIDs when using --resume
+ */
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Validates if a session ID is a valid UUID v4 format
+ * @param sessionId - The session ID to validate
+ * @returns true if the session ID is a valid UUID v4
+ */
+function isValidSessionId(sessionId: string | undefined): sessionId is string {
+  return sessionId !== undefined && UUID_REGEX.test(sessionId);
+}
 
 export class ClaudeCodeProvider implements AgentProvider {
   readonly id = "claude-code";
@@ -89,6 +104,12 @@ export class ClaudeCodeProvider implements AgentProvider {
         process.env[key] = value;
       }
       
+      // Validate session ID - only use resume if it's a valid UUID
+      const validSessionId = isValidSessionId(request.sessionId) ? request.sessionId : undefined;
+      if (request.sessionId && !validSessionId) {
+        console.warn(`[Claude Code] Invalid session ID format "${request.sessionId}" - Claude Code requires UUID format. Starting new session.`);
+      }
+
       try {
         // Execute Claude Code query
         for await (const sdkMessage of query({
@@ -98,9 +119,10 @@ export class ClaudeCodeProvider implements AgentProvider {
             executable: "node" as const,
             executableArgs: executableArgs,
             pathToClaudeCodeExecutable: this.claudePath,
-            ...(request.sessionId ? { resume: request.sessionId } : {}),
+            ...(validSessionId ? { resume: validSessionId } : {}),
             ...(request.workingDirectory ? { cwd: request.workingDirectory } : {}),
             permissionMode: "bypassPermissions" as const,
+            allowDangerouslySkipPermissions: true,
           },
         })) {
           if (debugMode) {

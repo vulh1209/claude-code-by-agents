@@ -20,7 +20,7 @@ await build({
   format: "esm",
   outfile: "dist/cli/node.js",
   external: [
-    "@anthropic-ai/claude-code",
+    "@anthropic-ai/claude-agent-sdk",
     "@anthropic-ai/sdk",
     "@hono/node-server",
     "hono",
@@ -44,7 +44,7 @@ await build({
   format: "esm",
   outfile: "dist/lambda.js",
   external: [
-    "@anthropic-ai/claude-code",
+    "@anthropic-ai/claude-agent-sdk",
   ],
   sourcemap: true,
 });

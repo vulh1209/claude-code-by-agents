@@ -1,9 +1,24 @@
 import { Context } from "hono";
-import { AbortError, query } from "@anthropic-ai/claude-code";
+import { AbortError, query } from "@anthropic-ai/claude-agent-sdk";
 import Anthropic from "@anthropic-ai/sdk";
 import type { ChatRequest, StreamResponse } from "../../shared/types.ts";
 import { prepareClaudeAuthEnvironment, writeClaudeCredentialsFile } from "../auth/claude-auth-utils.ts";
 import { globalRegistry } from "../providers/registry.ts";
+
+/**
+ * UUID v4 regex pattern for session ID validation
+ * Claude Code CLI requires session IDs to be valid UUIDs when using --resume
+ */
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Validates if a session ID is a valid UUID v4 format
+ * @param sessionId - The session ID to validate
+ * @returns true if the session ID is a valid UUID v4
+ */
+function isValidSessionId(sessionId: string | undefined): sessionId is string {
+  return sessionId !== undefined && UUID_REGEX.test(sessionId);
+}
 
 /**
  * Detects if orchestrator mode should be used
@@ -31,7 +46,7 @@ function shouldUseOrchestrator(message: string, availableAgents?: Array<{id: str
   // ONLY for multiple agent mentions - not for single agent or no mentions
   if (availableAgents && availableAgents.length > 0) {
     const mentionMatches = message.match(/@(\w+(?:-\w+)*)/g);
-    const result = mentionMatches && mentionMatches.length > 1;
+    const result = mentionMatches !== null && mentionMatches.length > 1;
     console.debug(`[DEBUG] shouldUseOrchestrator result:`, {
       mentionMatches,
       mentionCount: mentionMatches?.length || 0,
@@ -549,6 +564,12 @@ async function* executeClaudeCommand(
       process.env[key] = value;
     }
 
+    // Validate session ID - only use resume if it's a valid UUID
+    const validSessionId = isValidSessionId(sessionId) ? sessionId : undefined;
+    if (sessionId && !validSessionId) {
+      console.warn(`[WARN] Invalid session ID format "${sessionId}" - Claude Code requires UUID format. Starting new session.`);
+    }
+
     try {
       for await (const sdkMessage of query({
         prompt: processedMessage,
@@ -557,10 +578,11 @@ async function* executeClaudeCommand(
           executable: "node" as const,
           executableArgs: executableArgs,
           pathToClaudeCodeExecutable: claudePath,
-          ...(sessionId ? { resume: sessionId } : {}),
+          ...(validSessionId ? { resume: validSessionId } : {}),
           ...(allowedTools ? { allowedTools } : {}),
           ...(workingDirectory ? { cwd: workingDirectory } : {}),
           permissionMode: "bypassPermissions" as const,
+          allowDangerouslySkipPermissions: true,
         },
       })) {
         // Debug logging of raw SDK messages
