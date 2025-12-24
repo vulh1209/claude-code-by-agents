@@ -1,6 +1,8 @@
 /**
  * Task Queue API Handler
  * Provides endpoints for creating, managing, and executing task queues
+ *
+ * Uses Redis as the primary storage when available, with in-memory fallback.
  */
 
 import { Context } from "hono";
@@ -20,12 +22,31 @@ import type {
   TaskQueueEvent,
   DEFAULT_QUEUE_SETTINGS,
 } from "../../shared/taskQueueTypes.ts";
-import { createTaskScheduler, TaskScheduler } from "../services/TaskScheduler.ts";
+import { createTaskScheduler, getTaskScheduler, TaskScheduler } from "../services/TaskScheduler.ts";
+import { getRedisQueueStore, type RedisQueueStore } from "../services/RedisQueueStore.ts";
 
-// In-memory queue storage (for non-Electron environments)
-// In production with Electron, this would be replaced by Electron storage
+// In-memory queue storage (fallback when Redis is not available)
 const queues: Map<string, TaskQueue> = new Map();
 const activeSchedulers: Map<string, TaskScheduler> = new Map();
+
+// Get Redis store (will be initialized when first accessed)
+let redisStore: RedisQueueStore | null = null;
+
+/**
+ * Initialize Redis connection for queue handlers
+ */
+export async function initQueueRedis(redisUrl?: string): Promise<boolean> {
+  redisStore = getRedisQueueStore(redisUrl);
+  await redisStore.connect();
+  return redisStore.isAvailable();
+}
+
+/**
+ * Check if Redis is available
+ */
+function isRedisAvailable(): boolean {
+  return redisStore !== null && redisStore.isAvailable();
+}
 
 /**
  * Generate a unique ID
@@ -97,7 +118,14 @@ export async function handleCreateQueue(c: Context): Promise<Response> {
       metrics: createInitialMetrics(tasks.length),
     };
 
-    queues.set(queueId, queue);
+    // Save to Redis if available, otherwise use in-memory storage
+    if (isRedisAvailable() && redisStore) {
+      await redisStore.saveQueue(queue);
+      console.log(`✅ Queue saved to Redis: ${queue.name} (${queueId})`);
+    } else {
+      queues.set(queueId, queue);
+      console.log(`📦 Queue saved to memory: ${queue.name} (${queueId})`);
+    }
 
     const response: CreateQueueResponse = {
       queueId,
@@ -120,7 +148,15 @@ export async function handleCreateQueue(c: Context): Promise<Response> {
 export async function handleGetQueue(c: Context): Promise<Response> {
   const queueId = c.req.param("queueId");
 
-  const queue = queues.get(queueId);
+  // Try Redis first, then fall back to in-memory
+  let queue: TaskQueue | null | undefined = null;
+  if (isRedisAvailable() && redisStore) {
+    queue = await redisStore.loadQueue(queueId);
+  }
+  if (!queue) {
+    queue = queues.get(queueId);
+  }
+
   if (!queue) {
     return c.json({ error: "Queue not found" }, 404);
   }
@@ -131,23 +167,46 @@ export async function handleGetQueue(c: Context): Promise<Response> {
 
 /**
  * DELETE /api/queue/:queueId - Delete/cancel a queue
+ * Query params:
+ *   - force=true: Force delete even if running (will stop execution)
  */
 export async function handleDeleteQueue(c: Context): Promise<Response> {
   const queueId = c.req.param("queueId");
+  const forceDelete = c.req.query("force") === "true";
 
-  const queue = queues.get(queueId);
+  // Get queue
+  let queue: TaskQueue | null | undefined = null;
+  if (isRedisAvailable() && redisStore) {
+    queue = await redisStore.loadQueue(queueId);
+  } else {
+    queue = queues.get(queueId);
+  }
+
   if (!queue) {
     return c.json({ error: "Queue not found" }, 404);
   }
 
-  // Stop scheduler if running
+  // Check if queue is running - only allow delete if not running or force=true
+  if (queue.status === "running" && !forceDelete) {
+    return c.json({
+      error: "Cannot delete running queue. Use force=true to stop and delete, or pause/stop the queue first.",
+      status: queue.status
+    }, 400);
+  }
+
+  // Stop scheduler if running (when force=true)
   const scheduler = activeSchedulers.get(queueId);
   if (scheduler) {
     scheduler.stop();
     activeSchedulers.delete(queueId);
   }
 
-  queues.delete(queueId);
+  // Delete from Redis or memory
+  if (isRedisAvailable() && redisStore) {
+    await redisStore.deleteQueue(queueId);
+  } else {
+    queues.delete(queueId);
+  }
 
   return c.json({ success: true, message: "Queue deleted" });
 }
@@ -156,17 +215,23 @@ export async function handleDeleteQueue(c: Context): Promise<Response> {
  * GET /api/queues - List all queues
  */
 export async function handleListQueues(c: Context): Promise<Response> {
-  const queueList: QueueListItem[] = Array.from(queues.values()).map((q) => ({
-    id: q.id,
-    name: q.name,
-    status: q.status,
-    taskCount: q.tasks.length,
-    completedCount: q.metrics.completedTasks,
-    createdAt: q.createdAt,
-  }));
+  let queueList: QueueListItem[];
 
-  // Sort by creation time, newest first
-  queueList.sort((a, b) => b.createdAt - a.createdAt);
+  // Get from Redis if available, otherwise from memory
+  if (isRedisAvailable() && redisStore) {
+    queueList = await redisStore.listQueues();
+  } else {
+    queueList = Array.from(queues.values()).map((q) => ({
+      id: q.id,
+      name: q.name,
+      status: q.status,
+      taskCount: q.tasks.length,
+      completedCount: q.metrics.completedTasks,
+      createdAt: q.createdAt,
+    }));
+    // Sort by creation time, newest first
+    queueList.sort((a, b) => b.createdAt - a.createdAt);
+  }
 
   const response: ListQueuesResponse = { queues: queueList };
   return c.json(response);
@@ -182,7 +247,15 @@ export async function handleStartQueue(
 ): Promise<Response> {
   const queueId = c.req.param("queueId");
 
-  const queue = queues.get(queueId);
+  // Get queue from Redis or memory
+  let queue: TaskQueue | null | undefined = null;
+  if (isRedisAvailable() && redisStore) {
+    queue = await redisStore.loadQueue(queueId);
+  }
+  if (!queue) {
+    queue = queues.get(queueId);
+  }
+
   if (!queue) {
     return c.json({ error: "Queue not found" }, 404);
   }
@@ -193,6 +266,11 @@ export async function handleStartQueue(
 
   queue.status = "running";
   queue.startedAt = Date.now();
+
+  // Update in Redis
+  if (isRedisAvailable() && redisStore) {
+    await redisStore.updateQueueStatus(queueId, "running", queue.startedAt);
+  }
 
   const response: StartQueueResponse = {
     queueId,
@@ -209,7 +287,15 @@ export async function handleStartQueue(
 export async function handlePauseQueue(c: Context): Promise<Response> {
   const queueId = c.req.param("queueId");
 
-  const queue = queues.get(queueId);
+  // Get queue from Redis or memory
+  let queue: TaskQueue | null | undefined = null;
+  if (isRedisAvailable() && redisStore) {
+    queue = await redisStore.loadQueue(queueId);
+  }
+  if (!queue) {
+    queue = queues.get(queueId);
+  }
+
   if (!queue) {
     return c.json({ error: "Queue not found" }, 404);
   }
@@ -221,6 +307,11 @@ export async function handlePauseQueue(c: Context): Promise<Response> {
 
   queue.status = "paused";
 
+  // Update in Redis
+  if (isRedisAvailable() && redisStore) {
+    await redisStore.updateQueueStatus(queueId, "paused");
+  }
+
   return c.json({ success: true, status: "paused" });
 }
 
@@ -230,7 +321,15 @@ export async function handlePauseQueue(c: Context): Promise<Response> {
 export async function handleResumeQueue(c: Context): Promise<Response> {
   const queueId = c.req.param("queueId");
 
-  const queue = queues.get(queueId);
+  // Get queue from Redis or memory
+  let queue: TaskQueue | null | undefined = null;
+  if (isRedisAvailable() && redisStore) {
+    queue = await redisStore.loadQueue(queueId);
+  }
+  if (!queue) {
+    queue = queues.get(queueId);
+  }
+
   if (!queue) {
     return c.json({ error: "Queue not found" }, 404);
   }
@@ -242,6 +341,11 @@ export async function handleResumeQueue(c: Context): Promise<Response> {
 
   queue.status = "running";
 
+  // Update in Redis
+  if (isRedisAvailable() && redisStore) {
+    await redisStore.updateQueueStatus(queueId, "running");
+  }
+
   return c.json({ success: true, status: "running" });
 }
 
@@ -252,7 +356,15 @@ export async function handleRetryTask(c: Context): Promise<Response> {
   const queueId = c.req.param("queueId");
   const taskId = c.req.param("taskId");
 
-  const queue = queues.get(queueId);
+  // Get queue from Redis or memory
+  let queue: TaskQueue | null | undefined = null;
+  if (isRedisAvailable() && redisStore) {
+    queue = await redisStore.loadQueue(queueId);
+  }
+  if (!queue) {
+    queue = queues.get(queueId);
+  }
+
   if (!queue) {
     return c.json({ error: "Queue not found" }, 404);
   }
@@ -270,6 +382,20 @@ export async function handleRetryTask(c: Context): Promise<Response> {
   task.startedAt = undefined;
   task.completedAt = undefined;
 
+  // Update in Redis
+  if (isRedisAvailable() && redisStore) {
+    await redisStore.updateTask(taskId, {
+      status: "pending",
+      retryCount: 0,
+      error: undefined,
+      result: undefined,
+      startedAt: undefined,
+      completedAt: undefined,
+    });
+    // Add back to pending queue
+    await redisStore.requeueTask(queueId, taskId);
+  }
+
   return c.json({ success: true, task });
 }
 
@@ -279,29 +405,43 @@ export async function handleRetryTask(c: Context): Promise<Response> {
 export async function handleQueueStream(
   c: Context,
   getAgent: (agentId: string) => { id: string; apiEndpoint: string; workingDirectory: string } | undefined,
-  claudeAuth?: ChatRequest["claudeAuth"]
+  claudeAuth?: ChatRequest["claudeAuth"],
+  redisUrl?: string
 ): Promise<Response> {
   const queueId = c.req.param("queueId");
 
-  const queue = queues.get(queueId);
+  // Get queue from Redis or memory
+  let queue: TaskQueue | null | undefined = null;
+  if (isRedisAvailable() && redisStore) {
+    queue = await redisStore.loadQueue(queueId);
+  }
+  if (!queue) {
+    queue = queues.get(queueId);
+  }
+
   if (!queue) {
     return c.json({ error: "Queue not found" }, 404);
   }
 
-  // Create a new scheduler for this queue
-  const scheduler = createTaskScheduler({ debugMode: false });
+  // Create a new scheduler for this queue with Redis support
+  const scheduler = createTaskScheduler({ debugMode: false, redisUrl });
+  if (redisUrl) {
+    await scheduler.initRedis();
+  }
   activeSchedulers.set(queueId, scheduler);
 
   return streamSSE(c, async (stream) => {
     try {
-      for await (const event of scheduler.executeQueue(queue, getAgent, claudeAuth)) {
+      for await (const event of scheduler.executeQueue(queue!, getAgent, claudeAuth)) {
         await stream.writeSSE({
           data: JSON.stringify(event),
           event: event.type,
         });
 
-        // Update queue in storage after each event
-        queues.set(queueId, queue);
+        // Update queue in memory (Redis is updated by scheduler)
+        if (!isRedisAvailable()) {
+          queues.set(queueId, queue!);
+        }
       }
     } catch (error) {
       console.error("Queue stream error:", error);
@@ -322,13 +462,38 @@ export async function handleQueueStream(
 /**
  * Get queue by ID (for internal use)
  */
-export function getQueueById(queueId: string): TaskQueue | undefined {
+export async function getQueueById(queueId: string): Promise<TaskQueue | undefined> {
+  if (isRedisAvailable() && redisStore) {
+    const queue = await redisStore.loadQueue(queueId);
+    return queue || undefined;
+  }
   return queues.get(queueId);
 }
 
 /**
  * Update queue in storage (for internal use)
  */
-export function updateQueue(queue: TaskQueue): void {
-  queues.set(queue.id, queue);
+export async function updateQueue(queue: TaskQueue): Promise<void> {
+  if (isRedisAvailable() && redisStore) {
+    await redisStore.saveQueue(queue);
+  } else {
+    queues.set(queue.id, queue);
+  }
+}
+
+/**
+ * GET /api/queue/busy-agents - Get list of busy agent IDs
+ */
+export async function handleGetBusyAgents(c: Context): Promise<Response> {
+  let busyAgents: string[] = [];
+
+  if (isRedisAvailable() && redisStore) {
+    const busySet = await redisStore.getBusyAgents();
+    busyAgents = Array.from(busySet);
+  } else {
+    // Fallback: scan active schedulers (less accurate)
+    // In-memory mode doesn't track busy agents globally
+  }
+
+  return c.json({ busyAgents });
 }

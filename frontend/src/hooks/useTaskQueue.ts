@@ -541,7 +541,40 @@ export function useTaskQueue(apiEndpoint: string = API_BASE) {
   );
 
   /**
-   * Cancel/delete queue
+   * Delete a queue (only if not running)
+   */
+  const deleteQueue = useCallback(
+    async (queueId: string): Promise<void> => {
+      const response = await fetch(`${apiEndpoint}/api/queue/${queueId}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to delete queue");
+      }
+
+      // Delete from Electron storage
+      if (isElectron) {
+        await window.electronAPI!.storage.deleteTaskQueue(queueId);
+      }
+
+      setState((prev) => {
+        const { [queueId]: removed, ...remainingQueues } = prev.queues;
+        return {
+          ...prev,
+          queues: remainingQueues,
+          queueList: prev.queueList.filter((q) => q.id !== queueId),
+          activeQueueId:
+            prev.activeQueueId === queueId ? null : prev.activeQueueId,
+        };
+      });
+    },
+    [apiEndpoint, isElectron]
+  );
+
+  /**
+   * Cancel/force delete a running queue
    */
   const cancelQueue = useCallback(
     async (queueId: string): Promise<void> => {
@@ -551,12 +584,14 @@ export function useTaskQueue(apiEndpoint: string = API_BASE) {
         eventSourceRef.current = null;
       }
 
-      const response = await fetch(`${apiEndpoint}/api/queue/${queueId}`, {
+      // Force delete - will stop execution if running
+      const response = await fetch(`${apiEndpoint}/api/queue/${queueId}?force=true`, {
         method: "DELETE",
       });
 
       if (!response.ok) {
-        throw new Error("Failed to cancel queue");
+        const data = await response.json();
+        throw new Error(data.error || "Failed to cancel queue");
       }
 
       // Delete from Electron storage
@@ -676,6 +711,7 @@ export function useTaskQueue(apiEndpoint: string = API_BASE) {
     startQueue,
     pauseQueue,
     resumeQueue,
+    deleteQueue,
     cancelQueue,
     retryTask,
     skipTask,

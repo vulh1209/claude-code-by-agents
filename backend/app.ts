@@ -31,6 +31,8 @@ import {
   handleResumeQueue,
   handleRetryTask,
   handleQueueStream,
+  handleGetBusyAgents,
+  initQueueRedis,
 } from "./handlers/taskQueue.ts";
 import { globalRegistry } from "./providers/registry.ts";
 import { globalImageHandler } from "./utils/imageHandling.ts";
@@ -42,6 +44,7 @@ export interface AppConfig {
   claudePath: string; // Now required since validateClaudeCli always returns a path
   openaiApiKey?: string; // Optional OpenAI API key for multi-agent support
   anthropicApiKey?: string; // Optional Anthropic API key for orchestrator mode
+  redisUrl?: string; // Optional Redis URL for centralized queue storage
 }
 
 export function createApp(
@@ -52,6 +55,17 @@ export function createApp(
 
   // Initialize multi-agent system
   initializeMultiAgentSystem(config);
+
+  // Initialize Redis for queue storage if URL is provided
+  if (config.redisUrl) {
+    initQueueRedis(config.redisUrl).then((connected) => {
+      if (connected) {
+        console.log("✅ Redis queue storage initialized");
+      } else {
+        console.warn("⚠️ Redis connection failed, using in-memory storage");
+      }
+    });
+  }
 
   // Store AbortControllers for each request (shared with chat handler)
   const requestAbortControllers = new Map<string, AbortController>();
@@ -533,6 +547,20 @@ export function createApp(
 
   /**
    * @swagger
+   * /api/queue/busy-agents:
+   *   get:
+   *     summary: Get list of busy agent IDs
+   *     description: Returns a list of agent IDs that are currently processing queue tasks
+   *     tags: [TaskQueue]
+   *     responses:
+   *       200:
+   *         description: List of busy agent IDs
+   */
+  // NOTE: This route must come BEFORE /api/queue/:queueId to avoid being matched as a queueId
+  app.get("/api/queue/busy-agents", (c) => handleGetBusyAgents(c));
+
+  /**
+   * @swagger
    * /api/queue/{queueId}:
    *   get:
    *     summary: Get queue status and tasks
@@ -631,7 +659,7 @@ export function createApp(
    */
   app.get("/api/queue/stream/:queueId", (c) => {
     // TODO: Pass agent resolver and claudeAuth from request
-    return handleQueueStream(c, () => undefined, undefined);
+    return handleQueueStream(c, () => undefined, undefined, config.redisUrl);
   });
 
   // Explicit preflight OPTIONS handler for all routes

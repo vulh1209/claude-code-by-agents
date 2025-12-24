@@ -1,6 +1,8 @@
 /**
  * TaskScheduler Service
  * Manages parallel task execution across multiple agents with retry logic
+ *
+ * Now integrates with Redis for centralized queue storage and real-time sync
  */
 
 import type { ChatRequest, StreamResponse } from "../../shared/types.ts";
@@ -13,6 +15,7 @@ import type {
   TaskQueueMetrics,
   TaskStatus,
 } from "../../shared/taskQueueTypes.ts";
+import { getRedisQueueStore, type RedisQueueStore } from "./RedisQueueStore.ts";
 
 interface RunningTask {
   task: QueueTask;
@@ -22,6 +25,7 @@ interface RunningTask {
 
 interface TaskSchedulerConfig {
   debugMode?: boolean;
+  redisUrl?: string;
 }
 
 /**
@@ -146,9 +150,53 @@ export class TaskScheduler {
   private config: TaskSchedulerConfig;
   private isPaused: boolean = false;
   private isStopped: boolean = false;
+  private redisStore: RedisQueueStore;
+  private isRedisConnected: boolean = false;
 
   constructor(config: TaskSchedulerConfig = {}) {
     this.config = config;
+    this.redisStore = getRedisQueueStore(config.redisUrl);
+  }
+
+  /**
+   * Initialize Redis connection
+   */
+  async initRedis(): Promise<boolean> {
+    await this.redisStore.connect();
+    this.isRedisConnected = this.redisStore.isAvailable();
+    if (this.isRedisConnected) {
+      console.log("✅ TaskScheduler connected to Redis");
+      // Recover any interrupted queues
+      await this.recoverInterruptedQueues();
+    }
+    return this.isRedisConnected;
+  }
+
+  /**
+   * Recover interrupted queues on startup
+   */
+  private async recoverInterruptedQueues(): Promise<void> {
+    if (!this.isRedisConnected) return;
+
+    const interrupted = await this.redisStore.loadInterruptedQueues();
+    for (const queue of interrupted) {
+      console.log(`🔄 Recovering interrupted queue: ${queue.name} (${queue.id})`);
+      await this.redisStore.resetInterruptedQueue(queue.id);
+    }
+  }
+
+  /**
+   * Check if Redis is available
+   */
+  isRedisAvailable(): boolean {
+    return this.isRedisConnected;
+  }
+
+  /**
+   * Get Redis store for direct operations
+   */
+  getRedisStore(): RedisQueueStore {
+    return this.redisStore;
   }
 
   /**
@@ -166,7 +214,16 @@ export class TaskScheduler {
     this.runningTasks.clear();
     this.completedResults.clear();
 
-    yield { type: "queue_started", queueId: queue.id };
+    // Update queue status in Redis
+    if (this.isRedisConnected) {
+      await this.redisStore.updateQueueStatus(queue.id, "running", Date.now());
+    }
+
+    const startEvent: TaskQueueEvent = { type: "queue_started", queueId: queue.id };
+    if (this.isRedisConnected) {
+      await this.redisStore.publishEvent(queue.id, startEvent);
+    }
+    yield startEvent;
 
     const { maxConcurrency, retryCount, retryDelay, timeoutPerTask } =
       queue.settings;
@@ -229,12 +286,22 @@ export class TaskScheduler {
           timeoutPerTask
         );
 
-        yield {
+        // Mark agent as busy in Redis
+        if (this.isRedisConnected) {
+          await this.redisStore.markAgentBusy(task.agentId);
+          await this.redisStore.updateTask(task.id, { status: "in_progress", startedAt: Date.now() });
+        }
+
+        const taskStartEvent: TaskQueueEvent = {
           type: "task_started",
           queueId: queue.id,
           taskId: task.id,
           agentId: task.agentId,
         };
+        if (this.isRedisConnected) {
+          await this.redisStore.publishEvent(queue.id, taskStartEvent);
+        }
+        yield taskStartEvent;
       }
 
       // Check for completed tasks and yield events
@@ -242,17 +309,36 @@ export class TaskScheduler {
         const task = queue.tasks.find((t) => t.id === taskId);
         if (!task) continue;
 
+        // Mark agent as available
+        if (this.isRedisConnected) {
+          await this.redisStore.markAgentAvailable(task.agentId);
+        }
+
         if ("content" in result) {
           // Success
           task.status = "completed";
           task.result = result as TaskResult;
           task.completedAt = Date.now();
-          yield {
+
+          // Update Redis
+          if (this.isRedisConnected) {
+            await this.redisStore.updateTask(task.id, {
+              status: "completed",
+              completedAt: task.completedAt,
+              result: task.result,
+            });
+          }
+
+          const completedEvent: TaskQueueEvent = {
             type: "task_completed",
             queueId: queue.id,
             taskId: task.id,
             result: task.result,
           };
+          if (this.isRedisConnected) {
+            await this.redisStore.publishEvent(queue.id, completedEvent);
+          }
+          yield completedEvent;
         } else {
           // Error
           const error = result as TaskError;
@@ -260,28 +346,61 @@ export class TaskScheduler {
             // Will retry
             task.status = "retrying";
             task.retryCount++;
-            yield {
+
+            // Update Redis
+            if (this.isRedisConnected) {
+              await this.redisStore.updateTask(task.id, {
+                status: "retrying",
+                retryCount: task.retryCount,
+              });
+            }
+
+            const retryEvent: TaskQueueEvent = {
               type: "task_retrying",
               queueId: queue.id,
               taskId: task.id,
               attempt: task.retryCount,
               maxRetries: task.maxRetries,
             };
-            // Reset to pending after delay
-            setTimeout(() => {
-              task.status = "pending";
-            }, retryDelay * Math.pow(2, task.retryCount - 1));
+            if (this.isRedisConnected) {
+              await this.redisStore.publishEvent(queue.id, retryEvent);
+              // Re-add to pending queue after delay
+              setTimeout(async () => {
+                task.status = "pending";
+                await this.redisStore.requeueTask(queue.id, task.id);
+              }, retryDelay * Math.pow(2, task.retryCount - 1));
+            } else {
+              // Reset to pending after delay (non-Redis fallback)
+              setTimeout(() => {
+                task.status = "pending";
+              }, retryDelay * Math.pow(2, task.retryCount - 1));
+            }
+            yield retryEvent;
           } else {
             // Failed permanently
             task.status = "failed";
             task.error = error;
             task.completedAt = Date.now();
-            yield {
+
+            // Update Redis
+            if (this.isRedisConnected) {
+              await this.redisStore.updateTask(task.id, {
+                status: "failed",
+                completedAt: task.completedAt,
+                error: task.error,
+              });
+            }
+
+            const failedEvent: TaskQueueEvent = {
               type: "task_failed",
               queueId: queue.id,
               taskId: task.id,
               error: task.error,
             };
+            if (this.isRedisConnected) {
+              await this.redisStore.publishEvent(queue.id, failedEvent);
+            }
+            yield failedEvent;
           }
         }
         this.completedResults.delete(taskId);
@@ -329,27 +448,47 @@ export class TaskScheduler {
     const metrics = this.calculateMetrics(queue);
     queue.metrics = metrics;
 
+    // Update metrics in Redis
+    if (this.isRedisConnected) {
+      await this.redisStore.updateQueueMetrics(queue.id, metrics);
+    }
+
     if (this.isStopped) {
-      yield {
+      const failedEvent: TaskQueueEvent = {
         type: "queue_failed",
         queueId: queue.id,
         error: "Queue was stopped",
       };
+      if (this.isRedisConnected) {
+        await this.redisStore.updateQueueStatus(queue.id, "failed");
+        await this.redisStore.publishEvent(queue.id, failedEvent);
+      }
+      yield failedEvent;
     } else if (metrics.failedTasks > 0) {
       queue.status = "failed";
-      yield {
+      const failedEvent: TaskQueueEvent = {
         type: "queue_failed",
         queueId: queue.id,
         error: `${metrics.failedTasks} task(s) failed`,
       };
+      if (this.isRedisConnected) {
+        await this.redisStore.updateQueueStatus(queue.id, "failed");
+        await this.redisStore.publishEvent(queue.id, failedEvent);
+      }
+      yield failedEvent;
     } else {
       queue.status = "completed";
       queue.completedAt = Date.now();
-      yield {
+      const completedEvent: TaskQueueEvent = {
         type: "queue_completed",
         queueId: queue.id,
         metrics,
       };
+      if (this.isRedisConnected) {
+        await this.redisStore.updateQueueStatus(queue.id, "completed", queue.completedAt);
+        await this.redisStore.publishEvent(queue.id, completedEvent);
+      }
+      yield completedEvent;
     }
   }
 

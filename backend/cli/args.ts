@@ -13,6 +13,7 @@ export interface ParsedArgs {
   port: number;
   host: string;
   claudePath?: string;
+  redisUrl?: string;
 }
 
 export function parseCliArgs(runtime: Runtime): ParsedArgs {
@@ -48,6 +49,10 @@ export function parseCliArgs(runtime: Runtime): ParsedArgs {
       "--claude-path <path>",
       "Path to claude executable (overrides automatic detection)",
     )
+    .option(
+      "--redis-url <url>",
+      "Redis URL for centralized queue storage (e.g., redis://user:pass@host:port)",
+    )
     .option("-d, --debug", "Enable debug mode", false);
 
   // Parse arguments - Commander.js v14 handles this automatically
@@ -58,10 +63,14 @@ export function parseCliArgs(runtime: Runtime): ParsedArgs {
   const debugEnv = runtime.getEnv("DEBUG");
   const debugFromEnv = debugEnv?.toLowerCase() === "true" || debugEnv === "1";
 
+  // Redis URL can come from CLI or environment variable
+  const redisUrl = options.redisUrl || runtime.getEnv("REDIS_URL");
+
   return {
     debug: options.debug || debugFromEnv,
     port: options.port,
     host: options.host,
     claudePath: options.claudePath,
+    redisUrl,
   };
 }

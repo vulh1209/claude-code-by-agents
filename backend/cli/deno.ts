@@ -21,11 +21,16 @@ async function main(runtime: DenoRuntime) {
     console.log("🐛 Debug mode enabled");
   }
 
+  if (args.redisUrl) {
+    console.log("🔗 Redis queue storage enabled");
+  }
+
   // Create application
   const app = createApp(runtime, {
     debugMode: args.debug,
     staticPath: new URL("../dist/static", import.meta.url).pathname,
     claudePath: validatedClaudePath,
+    redisUrl: args.redisUrl,
   });
 
   // Start server (only show this message when everything is ready)

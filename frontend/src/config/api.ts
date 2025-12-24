@@ -15,14 +15,18 @@ export const API_CONFIG = {
 
 // Helper function to get full API URL using orchestrator agent configuration
 export const getApiUrl = (endpoint: string, orchestratorEndpoint?: string) => {
-  // In development, check if we should use local backend
-  if (import.meta.env.DEV && import.meta.env.VITE_USE_LOCAL_API === "true") {
-    return endpoint; // Use Vite proxy
+  // If orchestratorEndpoint is provided, always use it directly
+  if (orchestratorEndpoint) {
+    return `${orchestratorEndpoint}${endpoint}`;
   }
-  
-  // Use orchestrator endpoint if provided, otherwise fallback to default
-  const baseUrl = orchestratorEndpoint || "https://api.claudecode.run";
-  return `${baseUrl}${endpoint}`;
+
+  // In development without explicit endpoint, use Vite proxy to localhost
+  if (import.meta.env.DEV) {
+    return endpoint; // Use Vite proxy -> localhost:8080
+  }
+
+  // Production fallback
+  return `https://api.claudecode.run${endpoint}`;
 };
 
 // Helper function to get abort URL
