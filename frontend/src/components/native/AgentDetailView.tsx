@@ -139,9 +139,10 @@ export function AgentDetailView({
         try {
           console.log(`📖 Loading conversations from project: ${project.path}`);
           const projectHistories = await remoteHistory.fetchAgentHistories(
-            agent.apiEndpoint, 
-            project.encodedName,
-            agent.id // Pass agent ID for filtering
+            agent.apiEndpoint,
+            project.encodedName
+            // TODO: Uncomment to filter by agent ID when agentId is properly saved in conversation files
+            // agent.id // Pass agent ID for filtering
           );
           console.log(`💬 Found ${projectHistories.length} conversations in project ${project.path}`);
           allAgentConversations.push(...projectHistories);
